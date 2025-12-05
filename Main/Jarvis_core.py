@@ -1,14 +1,5 @@
-#Jarvis_core.py
-# - Research via Groq only (no DDG)
-# - Snippet behavior = Contextual (refine until user closes)
-# - Removed all volume automation functions
-# - Self-healing Deepgram STT
-# - Mic disabled when JARVIS speaks its own name
-# - Cinematic intro available
-# - Persona enforcement: no "text-based AI" disclaimers
-#
 # Recommended pip:
-# pip install deepgram-sdk murf-api groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
+# pip install deepgram-sdk murf groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
 #
 # Environment variables:
 # DEEPGRAM_API_KEY, MURF_API_KEY, GROQ_API_KEY, WS_PORT, WAKEWORD, CREATOR_NAME, AI_MODEL, TTS_BOOST
@@ -800,4 +791,5 @@ finally:
         sys.exit(0)
     except SystemExit:
         os._exit(0)
+
 
