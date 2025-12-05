@@ -1,6 +1,5 @@
-# Jarvis_core.py — Fixed interruption (barge-in) + reliable snippet flow
 # Requirements:
-# pip install deepgram-sdk murf-api groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
+# pip install deepgram-sdk murf groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
 
 import os
 import sys
@@ -853,3 +852,4 @@ if __name__ == "__main__":
             sys.exit(0)
         except SystemExit:
             os._exit(0)
+
