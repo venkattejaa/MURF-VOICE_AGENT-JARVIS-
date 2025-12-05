@@ -1,18 +1,21 @@
-# Recommended pip:
+# Jarvis_core.py — Fixed interruption (barge-in) + reliable snippet flow
+# Requirements:
 # pip install deepgram-sdk murf-api groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
-#
-# Environment variables:
-# DEEPGRAM_API_KEY, MURF_API_KEY, GROQ_API_KEY, WS_PORT, WAKEWORD, CREATOR_NAME, AI_MODEL, TTS_BOOST
 
-import os, sys, time, json, queue, threading, datetime, sqlite3, re, random, traceback
-from contextlib import redirect_stdout
+import os
+import sys
+import time
+import json
+import queue
+import threading
+import sqlite3
+import re
+import random
+import traceback
 from dotenv import load_dotenv
-import os, sys, time, json, queue, threading, datetime, sqlite3, re, random, traceback
-from contextlib import redirect_stdout
-from dotenv import load_dotenv
-import asyncio  # <-- ADD THIS LINE
+import asyncio
 
-# ---------------- CONFIG ----------------
+# config
 load_dotenv()
 DG_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 MURF_KEY = os.getenv("MURF_API_KEY", "")
@@ -22,16 +25,12 @@ WS_PORT = int(os.getenv("WS_PORT", "8765"))
 WAKEWORD = os.getenv("WAKEWORD", "jarvis").lower()
 CREATOR_NAME = os.getenv("CREATOR_NAME", "Venkat Teja")
 AI_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
-
 DISPLAY_NAME = "J.A.R.V.I.S"
 VOCAL_NAME = "jarvis"
 JARVIS_ABBREV = "Just A Rather Very Intelligent System"
+TTS_BOOST = float(os.getenv("TTS_BOOST", "2.5"))
 
-# TTS BOOST selected: C -> max (5.0)
-ENV_BOOST = os.getenv("TTS_BOOST")
-TTS_BOOST = float(ENV_BOOST) if ENV_BOOST else 5.0
-
-# ---------------- OPTIONAL IMPORTS ----------------
+# optional imports
 try:
     import sounddevice as sd
     import numpy as np
@@ -49,9 +48,9 @@ except Exception:
     DeepgramClient = None; LiveOptions = None; LiveTranscriptionEvents = None
 
 try:
-    from murf import Murf
+    from murf import Murf, MurfRegion
 except Exception:
-    Murf = None
+    Murf = None; MurfRegion = None
 
 try:
     from groq import Groq
@@ -68,140 +67,55 @@ try:
 except Exception:
     pywhatkit = None
 
-try:
-    import webbrowser
-except Exception:
-    webbrowser = None
+import webbrowser
 import dateparser
+import datetime
 
-def set_reminder(text, when):
-    """Store a reminder in DB."""
-    try:
-        ts = int(when.timestamp())
-        conn = sqlite3.connect("jarvis_mem.db")
-        conn.execute("INSERT INTO reminders (time, text) VALUES (?, ?)", (ts, text))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        log("Reminder save error:", e)
-        return False
-
-
-def parse_reminder_command(cmd):
-    """
-    Extract reminder content + time from natural language.
-    Examples:
-        remind me in 10 minutes to drink water
-        remind me at 5 PM to call mom
-        remind me tomorrow morning to study
-    """
-    cmd = cmd.lower()
-
-    if "remind me" not in cmd:
-        return None, None
-
-    # Extract the reminder message
-    # (everything after "to")
-    m = re.search(r"remind me .*? to (.+)", cmd)
-    if not m:
-        return None, None
-    reminder_text = m.group(1).strip()
-
-    # Extract time portion (everything after "remind me")
-    t = cmd.replace("remind me", "").replace("to " + reminder_text, "").strip()
-    parsed_time = dateparser.parse(t)
-
-    return reminder_text, parsed_time
-
-
-def list_reminders():
-    conn = sqlite3.connect("jarvis_mem.db")
-    rows = conn.execute("SELECT id, time, text, triggered FROM reminders ORDER BY time").fetchall()
-    conn.close()
-    return rows
-
-
-def clear_reminders():
-    conn = sqlite3.connect("jarvis_mem.db")
-    conn.execute("DELETE FROM reminders")
-    conn.commit()
-    conn.close()
-
-
-def reminder_loop():
-    """Background thread that checks reminders every second."""
-    while not shutdown_event.is_set():
-        try:
-            now = int(time.time())
-            conn = sqlite3.connect("jarvis_mem.db")
-            rows = conn.execute("SELECT id, text FROM reminders WHERE time <= ? AND triggered = 0", (now,)).fetchall()
-
-            for rid, text in rows:
-                # Mark triggered
-                conn.execute("UPDATE reminders SET triggered = 1 WHERE id = ?", (rid,))
-                conn.commit()
-
-                # Speak reminder
-                speak(f"Sir, reminder: {text}", interruptible=True, minimal=False)
-                broadcast("SHOW_CONTENT", text, "REMINDER")
-
-            conn.close()
-        except Exception as e:
-            log("Reminder loop error:", e)
-
-        time.sleep(1)
-
-# pycaw / volume removed as per user request
-
-# ---------------- GLOBAL STATE ----------------
+# Global state
 audio_queue = queue.Queue()
 connected_clients = set()
-last_content_data = {"text": "", "title": "", "mode": None}  # modes: snippet | research | teach
-is_speaking = False
-mic_active = True
-stop_speaking = threading.Event()
+last_content_data = {"text": "", "title": "", "mode": None}  # snippet|research|teach
+is_speaking = False                # True while TTS playback active
+stop_speaking = threading.Event()  # set() to request TTS stop
 shutdown_event = threading.Event()
 speech_lock = threading.Lock()
 gui_ready = threading.Event()
 system_ready_flag = False
-last_speech_time = 0.0
-self_trigger_disabled_until = 0.0  # block STT while TTS speaks its own name
+self_trigger_disabled_until = 0.0  # ignore STT briefly after TTS ends
 murf_client = None
 groq_client = None
 _ws_loop = None
 
 ACK_PHRASES = ["Yes, Sir?", "Listening.", "Ready.", "Standing by."]
 
-# ---------------- LOGGING ----------------
+# logging
 import logging
 logging.getLogger("websockets.client").setLevel(logging.CRITICAL)
 logging.getLogger("websockets.protocol").setLevel(logging.CRITICAL)
-
 def log(*args, **kwargs):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}]", *args, **kwargs)
 
-# ---------------- SANITIZE PERSONA ----------------
+# Utils
 def sanitize_for_speech(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     forbidden = [
         r"\bas an ai\b", r"\bas an ai model\b", r"\bi am a language model\b",
         r"\bi'?m a language model\b", r"\bi am a text-based ai\b", r"\bi'?m a text-based ai\b",
-        r"\bi cannot\b", r"\bi can'?t\b", r"\bi do not have\b", r"\bi don't have\b",
-        r"\bas a chatbot\b", r"\bas a bot\b"
     ]
     s = text
     for pat in forbidden:
         s = re.sub(pat, "", s, flags=re.I)
+    s = re.sub(r"```[\s\S]*?```", "", s, flags=re.DOTALL)
+    s = re.sub(r"`[^`]*`", "", s)
     s = re.sub(r"\s{2,}", " ", s).strip()
-    if len(re.sub(r"[^a-zA-Z0-9]","", s)) < 2:
-        s = "Understood, Sir. I will handle that."
     s = re.sub(r"\bjarvis\b", VOCAL_NAME, s, flags=re.I)
+    if len(re.sub(r"[^a-zA-Z0-9]", "", s)) < 2:
+        return ""
     return s
 
-# ---------------- WEBSOCKET HUD ----------------
+# WebSocket HUD
 async def _ws_handler(ws):
     connected_clients.add(ws)
     log("✔ GUI Client Connected")
@@ -223,7 +137,8 @@ def broadcast(status, text="", logmsg="", progress=0):
     stale = []
     for ws in list(connected_clients):
         try:
-            asyncio.run_coroutine_threadsafe(ws.send(payload), _ws_loop)
+            if _ws_loop:
+                asyncio.run_coroutine_threadsafe(ws.send(payload), _ws_loop)
         except Exception:
             stale.append(ws)
     for s in stale:
@@ -232,7 +147,7 @@ def broadcast(status, text="", logmsg="", progress=0):
 def start_ws_server(port=WS_PORT):
     global _ws_loop
     if websockets is None:
-        log("websockets module missing; HUD disabled.")
+        log("websockets missing; HUD disabled.")
         return
     _ws_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_ws_loop)
@@ -245,13 +160,14 @@ def start_ws_server(port=WS_PORT):
     except Exception as e:
         log("WS start error:", e)
 
-# ---------------- DB & HISTORY ----------------
+# DB
 def init_db():
     try:
         conn = sqlite3.connect("jarvis_mem.db")
         conn.execute("CREATE TABLE IF NOT EXISTS memory (fact TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS history (role TEXT, content TEXT)")
-        conn.close()
+        conn.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER, text TEXT, triggered INTEGER DEFAULT 0)")
+        conn.commit(); conn.close()
     except Exception as e:
         log("DB init error:", e)
 
@@ -275,7 +191,7 @@ def get_history(limit=10):
     except Exception:
         return []
 
-# ---------------- TOOLS & APPS ----------------
+# Tools
 def play_music(song):
     try:
         broadcast("PROCESSING", f"Playing {song}...", "YouTube")
@@ -291,106 +207,89 @@ def open_app(name):
     try:
         if not name: return "No app specified, Sir."
         if webbrowser:
-            # simple fallback: open name in default search
-            webbrowser.open(f"https://www.google.com/search?q={name}")
-            return "Opening web search for the app."
+            webbrowser.open(f"https://www.google.com/search?q={name}"); return "Opening web search for the app."
         return "App launcher unavailable."
     except Exception as e:
         log("Open app error:", e); return "Failed to open app."
 
-# ---------------- Groq (Research = Groq-only) ----------------
+# AI (Groq)
 def get_ai_response(prompt):
     sys_prompt = (
         f"You are {DISPLAY_NAME} ({JARVIS_ABBREV}) created by {CREATOR_NAME}.\n"
         "Persona: concise, witty, and always in-character. Address the user as 'Sir'. Do not identify as a language model, or mention limitations.\n"
-        "If asked for code or research, return concise content appropriate for a HUD display."
     )
     if not groq_client:
-        return sanitize_for_speech("Neural Core offline. I cannot provide advanced summaries right now, Sir.")
+        return "Neural Core offline. I cannot provide advanced summaries right now, Sir."
     try:
         messages = [{"role":"system","content":sys_prompt}]
         messages.extend(get_history(limit=6))
         messages.append({"role":"user","content":prompt})
         response = groq_client.chat.completions.create(model=AI_MODEL, messages=messages, temperature=0.25, max_tokens=700)
         out = response.choices[0].message.content.strip()
-        return sanitize_for_speech(out)
+        return out if isinstance(out, str) else str(out)
     except Exception as e:
         log("Groq error:", e)
-        err = str(e).lower()
-        if "rate" in err or "limit" in err or "429" in err:
-            return sanitize_for_speech("Neural Core is currently limited. Try again shortly, Sir.")
-        return sanitize_for_speech("Neural Core error. I cannot fetch that right now, Sir.")
+        return "Neural Core error. I cannot fetch that right now, Sir."
 
 def groq_research_summary(topic):
-    """
-    Use Groq to produce a clean, English research summary for 'topic'.
-    """
     prompt = (
         f"Produce a concise research summary about: {topic}\n"
         "- Output in Markdown.\n"
         "- Start with a one-line summary.\n"
-        "- Then 3-6 bullet points covering key concepts, recent developments, uses, and references.\n"
+        "- Then 3-6 bullet points.\n"
         "- Keep it under 350 words."
-        "Provide a clean, properly formatted, multi-line code example for: {t}.\n"
-        "REQUIREMENTS:\n"
-        "- MUST use correct indentation. Never break Intendations\n"
-        "- MUST break lines normally.\n"
-        "- MUST wrap the entire code in one triple-backtick block.\n"
-        "- NO inline one-line code.\n"
-        "- NO explanations inside the code block.\n"
-        "- Outside the code block, include ONE short summary line only."
-        "Persona:\n"
-        "Speak Less."
-        "Don't Speak unecessary things."
-        "just speak a little much which is enough"
     )
-    resp = get_ai_response(prompt)
-    return resp
+    return get_ai_response(prompt)
 
-# ---------------- TTS with Amplification ----------------
-VOICE_MAP = {"en":"en-IN-aarav","hi":"hi-IN-neelam","te":"te-IN-venkat","ta":"en-IN-aarav"}
-
-def choose_voice_and_text(text):
-    m = re.match(r"^\[LANG:(HI|TE|TA)\]\s*(.*)$", text, flags=re.I)
-    lang="en"; cleaned=text
-    if m:
-        tag = m.group(1).lower(); cleaned = m.group(2).strip()
-        if tag=="hi": lang="hi"
-        elif tag=="te": lang="te"
-        elif tag=="ta": lang="ta"
-    return VOICE_MAP.get(lang, VOICE_MAP["en"]), cleaned, lang
-
+# ------------------ TTS (Murf Falcon) ------------------
+# This speak() uses Murf Falcon streaming and supports immediate interruption.
 def speak(text, interruptible=True, minimal=False):
-    import numpy as np
-    global is_speaking, mic_active, stop_speaking
+    """
+    Interruptible Murf Falcon TTS. Uses murf_client global if initialized;
+    otherwise creates a local Murf client instance (MurfRegion.GLOBAL).
+    """
+    global is_speaking, self_trigger_disabled_until, murf_client
 
+    if not text: return
+    text = sanitize_for_speech(text)
     if not text:
         return
 
-    text = sanitize_for_speech(text)
-    if not text.strip():
-        return
-
-    # 🔥 STOP any ongoing TTS immediately
+    # request stop of any current TTS immediately
     stop_speaking.set()
-    time.sleep(0.03)
+    time.sleep(0.02)
     stop_speaking.clear()
 
+    # mark speaking state
     is_speaking = True
-    mic_active = False
+    # short suppression AFTER TTS finishes — we still allow STT audio to be captured for barge-in
+    self_trigger_disabled_until = time.time() + 0.5
 
-    broadcast("SPEAKING", text, f"TTS: {text[:40]}")
+    broadcast("SPEAKING", text, f"TTS: {text[:80]}")
 
     def tts_worker():
-        global is_speaking, mic_active
+        global is_speaking, murf_client, self_trigger_disabled_until
+
+        # ensure murf_client
+        try:
+            if murf_client is None:
+                if Murf is None:
+                    raise RuntimeError("Murf SDK missing")
+                if MurfRegion is not None:
+                    murf_client = Murf(api_key=MURF_KEY, region=MurfRegion.GLOBAL)
+                else:
+                    murf_client = Murf(api_key=MURF_KEY)
+        except Exception as e:
+            log("Murf init error in speak:", e)
+            print(text)
+            is_speaking = False
+            return
 
         try:
-            # --------------------------------------
-            # ⭐ FIXED — REAL MURF FALCON STREAM ⭐
-            # --------------------------------------
+            # user-specified Falcon usage (Matthew used as example; swap to Ronnie if you prefer)
             stream = murf_client.text_to_speech.stream(
                 text=text,
-                voice_id="Matthew",     # CHANGE TO Ronnie if using that
+                voice_id="Matthew",
                 model="FALCON",
                 multi_native_locale="en-US",
                 sample_rate=24000
@@ -400,53 +299,63 @@ def speak(text, interruptible=True, minimal=False):
                 print(text)
                 return
 
-            out = sd.OutputStream(
-                samplerate=24000,
-                channels=1,
-                dtype='int16',
-                blocksize=2048
-            )
+            # Output stream
+            out = sd.OutputStream(samplerate=24000, channels=1, dtype='int16', blocksize=2048)
             out.start()
 
-            buffer = b""
-            BOOST = float(TTS_BOOST)
+            pcm_buffer = b""
+            BOOST = float(TTS_BOOST) if TTS_BOOST else 1.0
 
             for packet in stream:
-                if stop_speaking.is_set():     # 🔥 INTERRUPTION WORKS HERE
+                # interruption requested -> break (immediate)
+                if stop_speaking.is_set():
                     break
 
                 if not packet or len(packet) < 2:
                     continue
 
-                buffer += packet
+                if not isinstance(packet, (bytes, bytearray)):
+                    try:
+                        packet = bytes(packet)
+                    except Exception:
+                        continue
 
-                while len(buffer) >= 4096:
-                    chunk = buffer[:4096]
-                    buffer = buffer[4096:]
+                pcm_buffer += packet
+
+                while len(pcm_buffer) >= 4096:
+                    chunk = pcm_buffer[:4096]
+                    pcm_buffer = pcm_buffer[4096:]
 
                     arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+                    # boost safely
                     arr *= BOOST
-                    arr = np.clip(arr, -32768, 32767)
+                    peak = np.max(np.abs(arr)) if arr.size else 0
+                    if peak > 30000:
+                        arr *= (30000.0 / peak)
+                    arr = np.clip(arr, -32768, 32767).astype(np.int16)
+                    out.write(arr)
 
-                    out.write(arr.astype(np.int16))
-
-            if len(buffer) > 2:
-                arr = np.frombuffer(buffer, dtype=np.int16).astype(np.float32)
+            # flush leftovers
+            if len(pcm_buffer) >= 2:
+                arr = np.frombuffer(pcm_buffer, dtype=np.int16).astype(np.float32)
                 arr *= BOOST
-                arr = np.clip(arr, -32768, 32767)
-                out.write(arr.astype(np.int16))
+                peak = np.max(np.abs(arr)) if arr.size else 0
+                if peak > 30000:
+                    arr *= (30000.0 / peak)
+                arr = np.clip(arr, -32768, 32767).astype(np.int16)
+                out.write(arr)
 
         except Exception as e:
-            log("TTS ERROR:", e)
-
+            log("TTS playback error:", e)
+            # fallback: print text to console
+            print(text)
         finally:
+            # mark finished — re-enable short window for self-trigger suppression
             is_speaking = False
-            mic_active = True
+            self_trigger_disabled_until = time.time() + 0.6
             broadcast("IDLE", "Awaiting input")
 
     threading.Thread(target=tts_worker, daemon=True).start()
-
-
 
 # ---------------- Snippet / Research / Teach flows ----------------
 SNIPPET_TRIGGERS = ["show example","show me an example","show snippet","code example","show code","give me a snippet","example in code","in snippet","example"]
@@ -459,8 +368,8 @@ def looks_like_trigger(text, triggers):
 
 def close_snippet(reason="User"):
     global last_content_data
-    if last_content_data.get("mode")=="snippet":
-        last_content_data = {"text":"", "title":"", "mode": None}
+    if last_content_data.get("mode") == "snippet":
+        last_content_data = {"text": "", "title": "", "mode": None}
         broadcast("HIDE_CONTENT", "", f"Snippet closed: {reason}")
         return True
     return False
@@ -470,7 +379,7 @@ def update_snippet(display, title):
     last_content_data = {"text": display, "title": title, "mode": "snippet"}
     broadcast("SHOW_CONTENT", display, title)
 
-# ---------------- Action parsing (volume removed) ----------------
+# Action parsing
 def execute_action_from_text(text):
     tl = text.lower()
     if "play" in tl and ("song" in tl or "music" in tl or tl.startswith("play ")):
@@ -478,7 +387,6 @@ def execute_action_from_text(text):
         if m:
             return play_music(m.group(1).strip())
         else:
-            # fallback to open youtube search
             q = tl.replace("play","").strip()
             return play_music(q)
     if "open" in tl and ("app" in tl or "open " in tl):
@@ -490,14 +398,15 @@ def execute_action_from_text(text):
         def _do_search(q):
             speak("Searching and summarizing, Sir.", interruptible=False, minimal=True)
             res = groq_research_summary(q)
-            last_content_data.update({"text": res, "title": f"RESEARCH: {q}", "mode":"research"})
+            last_content_data.update({"text": res, "title": f"RESEARCH: {q}", "mode": "research"})
             broadcast("SHOW_CONTENT", res, last_content_data["title"])
-            speak(res.split("\n")[0] if isinstance(res,str) else "Search complete, Sir.", interruptible=False, minimal=True)
+            first = (res.split("\n")[0] if isinstance(res, str) and res else "Search complete, Sir.")
+            speak(first, interruptible=False, minimal=True)
         threading.Thread(target=_do_search, args=(q,), daemon=True).start()
         return f"Searching for {q}"
     return None
 
-# ---------------- Cinematic intro ----------------
+# Cinematic intro
 def cinematic_intro():
     intro = (
         f"I am {DISPLAY_NAME} — {JARVIS_ABBREV}. "
@@ -506,9 +415,9 @@ def cinematic_intro():
         "At your command."
     )
     broadcast("SHOW_CONTENT", intro, "IDENTITY: J.A.R.V.I.S — CINEMATIC")
-    speak(intro, interruptible=False, minimal=False)
+    speak(intro, interruptible=False, minimal=True)
 
-# ---------------- PROCESS (main command handler) ----------------
+# Main process
 def process(text):
     global last_content_data
     if not text: return
@@ -516,153 +425,127 @@ def process(text):
     if not t: return
     tl = t.lower()
 
-    # Quick confirmations
+    # Close panels
+    if any(p in tl for p in ["close", "stop", "cancel", "hide", "remove", "off"]):
+        if last_content_data.get("mode") in ["snippet","research","teach"]:
+            last_content_data["mode"] = None
+            broadcast("HIDE_CONTENT", "", "Panel Closed")
+            speak("Closed, Sir.", interruptible=False, minimal=True)
+            return
+
     if "can you hear" in tl:
         speak("Yes, Sir. I can hear and understand you.", interruptible=False, minimal=True)
         return
 
-    # Close snippet explicitly
     if "close" in tl and "snippet" in tl:
         closed = close_snippet("Direct close request")
         speak("Snippet closed, Sir." if closed else "No snippet open, Sir.", interruptible=False, minimal=True)
         return
 
-    # If teaching and user says later/pause
-    if last_content_data.get("mode")=="teach" and ("later" in tl or "pause" in tl):
-        last_content_data = {"text":"", "title":"", "mode":None}
-        broadcast("HIDE_CONTENT", "", "Teach closed")
-        speak("Very well, Sir. We will continue later.", interruptible=False, minimal=True)
-        return
-
-    # Context switch: if snippet open and incoming command not snippet-refinement and not explicit code request -> close snippet
-    if last_content_data.get("mode")=="snippet":
-        # If current text is a code-refinement follow up, keep it; otherwise close.
+    if last_content_data.get("mode") == "snippet":
         refine_phrases = ["add","modify","change","use","show me","in c","in java","with function","with input","include"]
         if not (looks_like_trigger(t, SNIPPET_TRIGGERS) or any(p in tl for p in refine_phrases)):
             close_snippet("Context switch")
 
-    # Automations-first
     action = execute_action_from_text(t)
     if action:
         speak(action, interruptible=False, minimal=True)
         save_history("user", t); save_history("assistant", action)
         return
 
-    # Identity triggers
     id_triggers = ["who are you","what is your identity","tell me about yourself","who made you","identity"]
     if any(p in tl for p in id_triggers):
         cinematic_intro(); save_history("user", t); save_history("assistant", "Cinematic intro"); return
 
-    # Snippet request (contextual)
+    # SNIPPET handling — robust extraction and display
     if looks_like_trigger(t, SNIPPET_TRIGGERS):
-        # If snippet open and user is refining, create refinement prompt
-        if last_content_data.get("mode")=="snippet":
-            base_title = last_content_data.get("title","SNIPPET")
+        if last_content_data.get("mode") == "snippet":
             prompt = f"Refine the following snippet per request: {t}\nCURRENT_SNIPPET:\n{last_content_data.get('text','')}\nReturn only a single code block and a one-line description."
         else:
             prompt = f"Provide a concise code example for: {t}. Return ONLY one code block in triple backticks and a one-line summary above it."
+
         resp = get_ai_response(prompt)
-        # Extract clean code block reliably
-        code_match = re.search(r"```[\s\S]*?```", resp)
-        title = "Example: " + (" ".join(t.split()[:8])).strip()
-        if code_match:
-    # Keep EXACT formatting inside backticks
-            display = code_match.group(0)
-        
+        if not resp:
+            speak("I could not fetch an example, Sir.", interruptible=False, minimal=True)
+            return
+
+        # Extract code block reliably, preserving indentation
+        m = re.search(r"```(?:\w*\n)?([\s\S]*?)```", resp)
+        if m:
+            code_body = m.group(1).rstrip()
+            display = "```\n" + code_body + "\n```"
         else:
-    # As fallback, preserve linebreaks
-            display = "```" + resp.strip() + "```"
+            # fallback — wrap full response
+            display = "```\n" + resp.strip() + "\n```"
 
-        
-
-
-        update_snippet(display, f"SNIPPET: {title}")
+        update_snippet(display, f"SNIPPET: {t[:40]}")
         first_line = resp.split("\n")[0].strip()
         speak(first_line if first_line else "Displayed example, Sir.", interruptible=False, minimal=True)
         save_history("user", t); save_history("assistant", resp)
         return
 
-    # Research (Groq-only)
+    # Research
     if looks_like_trigger(t, RESEARCH_TRIGGERS):
         topic = t
         speak(f"Compiling research on {topic}, Sir.", interruptible=False, minimal=True)
         def _do(topic):
             res = groq_research_summary(topic)
-            last_content_data.update({"text": res, "title": f"RESEARCH: {topic}", "mode":"research"})
+            last_content_data.update({"text": res, "title": f"RESEARCH: {topic}", "mode": "research"})
             broadcast("SHOW_CONTENT", res, last_content_data["title"])
-            speak(res.split("\n")[0] if isinstance(res,str) else "Research complete, Sir.", interruptible=False, minimal=True)
+            speak(res.split("\n")[0] if isinstance(res, str) else "Research complete, Sir.", interruptible=False, minimal=True)
         threading.Thread(target=_do, args=(topic,), daemon=True).start()
         save_history("user", t)
         return
 
     # Teach
-    if looks_like_trigger(t, SNIPPET_TRIGGERS):
-
-        if last_content_data.get("mode") == "snippet":
-                prompt = (
-                f"Refine this code snippet based on user request:\n"
-                f"REQUEST: {t}\n"
-                f"CURRENT SNIPPET:\n{last_content_data.get('text','')}\n\n"
-                "Return only:\n"
-                "1. One-line summary (text)\n"
-                "2. One properly formatted code block (```)."
-            )
-        else:
-            prompt = (
-                f"Give a clean, properly formatted code example for: {t}\n"
-                "Return ONLY:\n"
-                "1. One-line summary\n"
-                "2. One triple-backtick code block (no extra text)"
-                )
-
+    if looks_like_trigger(t, TEACH_TRIGGERS):
+        prompt = f"Teach: {t}. Provide a simple analogy and structured explanation suitable for a beginner. Start with one-line summary and include bullet points."
         resp = get_ai_response(prompt)
-
-        code = re.search(r"```[\s\S]*?```", resp)
-        if code:
-                snippet = code.group(0)
-        else:
-                snippet = f"```\n{resp}\n```"
-
-        update_snippet(snippet, f"SNIPPET: {t[:30]}")
-
-        one_line = resp.split("\n")[0].strip()
-        speak(one_line, interruptible=False, minimal=True)
-
-        save_history("user", t)
-        save_history("assistant", resp)
+        last_content_data = {"text": resp, "title": f"TEACH: {t}", "mode": "teach"}
+        broadcast("SHOW_CONTENT", resp, last_content_data["title"])
+        speak(resp.split("\n")[0] if isinstance(resp, str) else "Teaching complete, Sir.", interruptible=False, minimal=True)
+        save_history("user", t); save_history("assistant", resp)
         return
 
-
-    # Default: LLM chat
+    # Default: LLM
     broadcast("THINKING", "Processing...", "Querying Neural Core")
     resp = get_ai_response(t)
     save_history("user", t); save_history("assistant", resp)
 
-    # If LLM instructed a play or open action, we'll parse again
-    post_action = execute_action_from_text(resp if isinstance(resp,str) else "")
+    # Post-action
+    post_action = execute_action_from_text(resp if isinstance(resp, str) else "")
     if post_action:
         speak(post_action, interruptible=False, minimal=True)
         broadcast("PROCESSING", post_action, "Automation Executed")
         return
 
-    # Quick time handling
     if "time" in tl and ("what" in tl or "tell" in tl or "current" in tl):
         speak(f"It is {datetime.datetime.now().strftime('%I:%M %p')}, Sir.", interruptible=False, minimal=True)
         return
 
-    speak(resp if isinstance(resp,str) else str(resp), interruptible=True, minimal=True)
+    speak(resp if isinstance(resp, str) else str(resp), interruptible=True, minimal=True)
 
-# ---------------- Deepgram STT (self-healing) ----------------
+# ---------------- Deepgram STT ----------------
 def mic_callback(indata, frames, t, status):
     now = time.time()
-    if mic_active and now > self_trigger_disabled_until:
-        try:
-            audio_queue.put(indata.tobytes())
-        except Exception:
-            pass
+
+    # IGNORE audio while TTS is speaking or in suppression window
+    if is_speaking or now < self_trigger_disabled_until:
+        return
+
+    try:
+        audio_queue.put(indata.tobytes())
+    except Exception:
+        pass
+
 
 def process_final_stt(clean):
     if not clean: return
+    now = time.time()
+    if now < self_trigger_disabled_until:
+        log("Final transcript ignored due to recent TTS (self-trigger suppression).")
+        return
+    clean = clean.strip().lower()
     if clean == WAKEWORD:
         speak(random.choice(ACK_PHRASES), interruptible=False, minimal=True)
         broadcast("LISTENING", "Listening...", "Wake Detected")
@@ -670,7 +553,8 @@ def process_final_stt(clean):
     if clean.startswith(WAKEWORD + " "):
         cmd = clean[len(WAKEWORD):].strip()
         if cmd:
-            threading.Thread(target=process, args=(cmd,), daemon=True).start(); return
+            threading.Thread(target=process, args=(cmd,), daemon=True).start()
+            return
         else:
             speak(random.choice(ACK_PHRASES), interruptible=False, minimal=True); return
     if clean.endswith(" " + WAKEWORD):
@@ -679,6 +563,7 @@ def process_final_stt(clean):
             threading.Thread(target=process, args=(trimmed,), daemon=True).start(); return
         else:
             speak(random.choice(ACK_PHRASES), interruptible=False, minimal=True); return
+    # normal final utterance
     threading.Thread(target=process, args=(clean,), daemon=True).start()
 
 async def deepgram_loop():
@@ -701,7 +586,6 @@ async def deepgram_loop():
                 interim_results=True
             )
 
-            # EXACT ORIGINAL LOGIC — UNTOUCHED
             conn = None
             try:
                 conn = dg.listen.live.v("1")
@@ -713,100 +597,89 @@ async def deepgram_loop():
 
             if conn is None:
                 log("Deepgram listen() not available; retrying...")
-                await asyncio.sleep(1)
-                continue
+                await asyncio.sleep(1); continue
 
-            # EVENT HANDLER (same as before)
             def on_message(self, result, **kwargs):
                 try:
                     transcript = result.channel.alternatives[0].transcript
                 except Exception:
                     transcript = None
-
                 if not transcript:
                     return
 
                 if not result.is_final:
-                    if not is_speaking:
-                        broadcast("LISTENING", transcript + "...", "Partial")
+                    # If assistant is speaking and we see an interim transcript => user started speaking => interruption
+                    if is_speaking and transcript.strip():
+                        log("Interim while speaking -> interruption detected. Stopping TTS.")
+                        stop_speaking.set()
+                        # broadcast partial as interruption
+                        broadcast("LISTENING", transcript + "...", "Partial (interruption)")
+                    else:
+                        # show partial transcript
+                        if transcript.strip():
+                            broadcast("LISTENING", transcript + "...", "Partial")
                     return
 
+                # final transcript
                 clean_raw = transcript.strip().lower()
                 clean = re.sub(r"[^\w\s]", "", clean_raw)
-
                 now = time.time()
-                if is_speaking or now < self_trigger_disabled_until:
-                    return
+                if now < self_trigger_disabled_until:
+                    log("Ignoring final transcript (self-trigger suppression)."); return
 
-                log("User:", clean)
+                log("User (final):", clean)
                 process_final_stt(clean)
 
-            # ATTACH EVENTS
+            # attach events
             try:
                 conn.on(LiveTranscriptionEvents.Transcript, on_message)
             except Exception:
                 try:
                     conn.on("Transcript", on_message)
                 except Exception:
-                    log("Deepgram event attach failed; reconnecting.")
-                    await asyncio.sleep(1)
-                    continue
+                    log("Deepgram event attach failed; reconnecting."); await asyncio.sleep(1); continue
 
-            if not conn.start(options):
-                log("Deepgram start returned False; retrying...")
-                await asyncio.sleep(1)
-                continue
+            try:
+                started = conn.start(options)
+            except Exception:
+                started = False
+
+            if not started:
+                log("Deepgram start returned False; retrying..."); await asyncio.sleep(1); continue
 
             log("✔ Deepgram Connected (stable)")
 
             if sd is None:
-                log("sounddevice missing; cannot capture mic.")
-                return
+                log("sounddevice missing; cannot capture mic."); return
 
-            stream = sd.InputStream(
-                channels=1,
-                samplerate=16000,
-                callback=mic_callback,
-                dtype="int16",
-                blocksize=2048
-            )
-
+            stream = sd.InputStream(channels=1, samplerate=16000, callback=mic_callback, dtype="int16", blocksize=2048)
             stream.start()
             last_alive = time.time()
+            KEEPALIVE_SEC = 8.0
 
-            # MAIN LOOP — ONLY FIX IS HERE
             while not shutdown_event.is_set():
                 await asyncio.sleep(0.01)
-
                 try:
                     if not audio_queue.empty():
                         chunk = audio_queue.get()
-
                         try:
                             conn.send(chunk)
                             last_alive = time.time()
                         except Exception:
                             raise ConnectionError("send failed")
-
-                    # FIXED TIMEOUT (8 seconds instead of 2)
-                    elif time.time() - last_alive > 8.0:
+                    elif time.time() - last_alive > KEEPALIVE_SEC:
                         try:
                             conn.send(json.dumps({"type": "KeepAlive"}))
                             last_alive = time.time()
                         except Exception:
                             raise ConnectionError("keepalive failed")
-
                 except ConnectionError as e:
-                    log("⚠ STT connection error:", e)
-                    break
-
+                    log("⚠ STT connection error:", e); break
                 except Exception as e:
-                    log("Deepgram streaming exception:", e)
-                    break
+                    log("Deepgram streaming exception:", e); break
 
             try: stream.stop()
             except: pass
-
             try: conn.finish()
             except: pass
 
@@ -818,17 +691,59 @@ async def deepgram_loop():
             await asyncio.sleep(1)
             continue
 
-
-
 def start_stt_task():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(deepgram_loop())
 
-# ---------------- System startup ----------------
+# Reminders (kept minimal)
+def set_reminder(text, when):
+    try:
+        ts = int(when.timestamp())
+        conn = sqlite3.connect("jarvis_mem.db")
+        conn.execute("INSERT INTO reminders (time, text) VALUES (?, ?)", (ts, text))
+        conn.commit(); conn.close(); return True
+    except Exception as e:
+        log("Reminder save error:", e); return False
+
+def parse_reminder_command(cmd):
+    cmd = cmd.lower()
+    if "remind me" not in cmd:
+        return None, None
+    m = re.search(r"remind me .*? to (.+)", cmd)
+    if not m:
+        return None, None
+    reminder_text = m.group(1).strip()
+    t = cmd.replace("remind me", "").replace("to " + reminder_text, "").strip()
+    parsed_time = dateparser.parse(t)
+    return reminder_text, parsed_time
+
+def list_reminders():
+    conn = sqlite3.connect("jarvis_mem.db")
+    rows = conn.execute("SELECT id, time, text, triggered FROM reminders ORDER BY time").fetchall()
+    conn.close(); return rows
+
+def clear_reminders():
+    conn = sqlite3.connect("jarvis_mem.db"); conn.execute("DELETE FROM reminders"); conn.commit(); conn.close()
+
+def reminder_loop():
+    while not shutdown_event.is_set():
+        try:
+            now = int(time.time())
+            conn = sqlite3.connect("jarvis_mem.db")
+            rows = conn.execute("SELECT id, text FROM reminders WHERE time <= ? AND triggered = 0", (now,)).fetchall()
+            for rid, text in rows:
+                conn.execute("UPDATE reminders SET triggered = 1 WHERE id = ?", (rid,)); conn.commit()
+                speak(f"Sir, reminder: {text}", interruptible=True, minimal=False)
+                broadcast("SHOW_CONTENT", text, "REMINDER")
+            conn.close()
+        except Exception as e:
+            log("Reminder loop error:", e)
+        time.sleep(1)
+
+# System startup & Entrypoint
 def system_startup():
     global murf_client, groq_client, system_ready_flag
-    
     log("Waiting for GUI connection...")
     gui_ready.wait(timeout=30)
     broadcast("BOOT", "", "Establish Uplink...", 10); time.sleep(0.2)
@@ -836,7 +751,11 @@ def system_startup():
     init_db()
     broadcast("BOOT", "", "Initializing Murf...", 50)
     try:
-        murf_client = Murf(api_key=MURF_KEY) if Murf else None
+        if Murf is not None:
+            if MurfRegion is not None:
+                murf_client = Murf(api_key=MURF_KEY, region=MurfRegion.GLOBAL)
+            else:
+                murf_client = Murf(api_key=MURF_KEY)
     except Exception as e:
         log("Murf init failed:", e); murf_client = None
     broadcast("BOOT", "", "Connecting to Groq Core...", 70)
@@ -844,7 +763,7 @@ def system_startup():
         groq_client = Groq(api_key=GROQ_API_KEY) if Groq else None
         if groq_client:
             try:
-                groq_client.chat.completions.create(model=AI_MODEL, messages=[{"role":"user","content":"Ping"}], max_tokens=1)
+                groq_client.chat.completions.create(model=AI_MODEL, messages=[{"role":"user","content":"ping"}], max_tokens=1)
                 log("✔ Connected to Groq"); broadcast("BOOT","", "Neural Link Established",80)
             except Exception:
                 broadcast("BOOT","", "NEURAL LINK FAILED",80)
@@ -855,57 +774,44 @@ def system_startup():
 
     broadcast("BOOT", "", "Calibrating Audio...", 90)
     t_stt = threading.Thread(target=start_stt_task, daemon=True); t_stt.start()
+    t_rem = threading.Thread(target=reminder_loop, daemon=True); t_rem.start()
     time.sleep(0.5)
     system_ready_flag = True
     broadcast("READY", "", "System Online", 100)
     speak("Systems online. At your service, Sir.", interruptible=False, minimal=True)
 
-# ---------------- Entrypoint ----------------
 if __name__ == "__main__":
-    # Start HUD server
     if websockets:
         t_ws = threading.Thread(target=start_ws_server, daemon=True); t_ws.start()
     else:
         log("websockets missing; HUD disabled.")
-
-    # Start system
     t_init = threading.Thread(target=system_startup, daemon=True); t_init.start()
-
     log("✔ Launching Interface...")
 
-try:
-    if webview:
-        # Always load HTML from the same folder as this script
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        html_path = os.path.join(base_dir, "Jarvis_ui.html")
-
-        if not os.path.exists(html_path):
-            log(f"[ERROR] HUD not found at: {html_path}")
-        else:
-            log(f"[HUD] Loaded: {html_path}")
-
-        window = webview.create_window(
-            DISPLAY_NAME,
-            url=f"file:///{html_path}",
-            width=1000,
-            height=700,
-            background_color='#000000',
-            frameless=False
-        )
-
-        webview.start()
-
-    else:
-        log("webview missing; run headless.")
-        while not shutdown_event.is_set():
-            time.sleep(0.5)
-
-except Exception as e:
-    log(f"GUI Error: {e}")
-
-finally:
-    shutdown_event.set()
     try:
-        sys.exit(0)
-    except SystemExit:
-        os._exit(0)
+        if webview:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            html_path_candidates = ["Jarvis_ui.html","jarvis_ui.html","Jarvis_UI.html","HUD.html"]
+            html_path = None
+            for n in html_path_candidates:
+                p = os.path.join(base_dir, n)
+                if os.path.exists(p):
+                    html_path = p; break
+            if not html_path:
+                log(f"[ERROR] HUD not found at: {os.path.join(base_dir, 'Jarvis_ui.html')}")
+            else:
+                log(f"[HUD] Loaded: {html_path}")
+                window = webview.create_window(DISPLAY_NAME, url=f"file:///{html_path}", width=1000, height=700, background_color='#000000', frameless=False)
+                webview.start()
+        else:
+            log("webview missing; run headless.")
+            while not shutdown_event.is_set():
+                time.sleep(0.5)
+    except Exception as e:
+        log("GUI Error:", e, traceback.format_exc())
+    finally:
+        shutdown_event.set()
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)
