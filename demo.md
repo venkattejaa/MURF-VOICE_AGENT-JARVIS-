@@ -21,8 +21,6 @@
 ### ⏱ Time/utility
 "What is the time now?"
 
-### 🎬 Cinematic identity
-"Who are you?"
-
 ### 🔚 End
 "Thanks Jarvis"
+
