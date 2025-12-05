@@ -361,158 +361,91 @@ def choose_voice_and_text(text):
     return VOICE_MAP.get(lang, VOICE_MAP["en"]), cleaned, lang
 
 def speak(text, interruptible=True, minimal=False):
-    """
-    Murf TTS v6 — Ultra-stable, low-latency, mic-safe.
-    
-    Fixes:
-    - Murf 500 latency glitches (empty PCM packets)
-    - Out-of-bounds PCM crash
-    - Long delays (6–8 sec) before speaking
-    - Mic hearing its own name
-    """
-
     import numpy as np
-    global is_speaking, mic_active, last_speech_time, self_trigger_disabled_until
+    global is_speaking, mic_active, stop_speaking
 
     if not text:
         return
 
-    # Persona cleaning
     text = sanitize_for_speech(text)
-    text = re.sub(r"\bJ\.?A\.?R\.?V\.?I\.?S\b", VOCAL_NAME, text, flags=re.I)
-
-    if len(re.sub(r"[^a-zA-Z0-9]", "", text)) < 2:
+    if not text.strip():
         return
 
-    # Stop old speech
+    # 🔥 STOP any ongoing TTS immediately
     stop_speaking.set()
-    time.sleep(0.02)
+    time.sleep(0.03)
     stop_speaking.clear()
 
-    # Voice & MIC handling
     is_speaking = True
     mic_active = False
 
-    # When name spoken → mute longer
-    if VOCAL_NAME in text.lower():
-        self_trigger_disabled_until = time.time() + 3.5
-    else:
-        self_trigger_disabled_until = time.time() + 0.6
+    broadcast("SPEAKING", text, f"TTS: {text[:40]}")
 
-    # Remove code fences for voice
-    display_text = re.sub(r"```.*?```", "", text, flags=re.DOTALL).strip()
-    speech_text  = re.sub(r"```.*?```", "", text, flags=re.DOTALL).strip()
+    def tts_worker():
+        global is_speaking, mic_active
 
-    # Minimal → only speak first sentence
-    if minimal:
-    # minimal mode → only 1 sentence
-       # FULL SPEECH ALWAYS — ignore minimal flag
-        minimal = False
+        try:
+            # --------------------------------------
+            # ⭐ FIXED — REAL MURF FALCON STREAM ⭐
+            # --------------------------------------
+            stream = murf_client.text_to_speech.stream(
+                text=text,
+                voice_id="Matthew",     # CHANGE TO Ronnie if using that
+                model="FALCON",
+                multi_native_locale="en-US",
+                sample_rate=24000
+            )
 
-# REMOVE ELSE LIMIT
-# else:
-#     pass  # speak entire text
+            if sd is None or np is None:
+                print(text)
+                return
 
+            out = sd.OutputStream(
+                samplerate=24000,
+                channels=1,
+                dtype='int16',
+                blocksize=2048
+            )
+            out.start()
 
-    # HUD update
-    broadcast("SPEAKING", display_text, f"AI: {display_text[:60]}")
+            buffer = b""
+            BOOST = float(TTS_BOOST)
 
-    # ---------------------------
-    # Worker thread begins
-    # ---------------------------
-    def worker():
-        global is_speaking, mic_active, last_speech_time, self_trigger_disabled_until
+            for packet in stream:
+                if stop_speaking.is_set():     # 🔥 INTERRUPTION WORKS HERE
+                    break
 
-        with speech_lock:
-            try:
-                # Choose voice
-                voice_id, cleaned, lang = choose_voice_and_text(speech_text)
+                if not packet or len(packet) < 2:
+                    continue
 
-                # Murf stream
-                stream = murf_client.text_to_speech.stream(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    style="Conversational",
-                    model="GEN2",
-                    format="PCM",
-                    sample_rate=24000
-                )
+                buffer += packet
 
-                # If missing audio modules
-                if sd is None or np is None:
-                    print(f"{DISPLAY_NAME}: {speech_text}")
-                    return
+                while len(buffer) >= 4096:
+                    chunk = buffer[:4096]
+                    buffer = buffer[4096:]
 
-                # Audio output
-                with sd.OutputStream(samplerate=24000, channels=1, dtype='int16') as out:
+                    arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+                    arr *= BOOST
+                    arr = np.clip(arr, -32768, 32767)
 
-                    pcm_buffer = b""
-                    CHUNK = 4096
-                    BOOST = float(TTS_BOOST)
+                    out.write(arr.astype(np.int16))
 
-                    # ------------------------------
-                    # NEW: Ultra-stable streaming loop
-                    # ------------------------------
-                    for packet in stream:
+            if len(buffer) > 2:
+                arr = np.frombuffer(buffer, dtype=np.int16).astype(np.float32)
+                arr *= BOOST
+                arr = np.clip(arr, -32768, 32767)
+                out.write(arr.astype(np.int16))
 
-                        if stop_speaking.is_set():
-                            break
+        except Exception as e:
+            log("TTS ERROR:", e)
 
-                        # Skip empty packets → fixes Murf 500 errors
-                        if not packet or len(packet) < 2:
-                            continue
+        finally:
+            is_speaking = False
+            mic_active = True
+            broadcast("IDLE", "Awaiting input")
 
-                        # Ensure packet is bytes
-                        if not isinstance(packet, bytes):
-                            try:
-                                packet = bytes(packet)
-                            except Exception:
-                                continue
+    threading.Thread(target=tts_worker, daemon=True).start()
 
-                        pcm_buffer += packet
-
-                        # Process whenever buffer large enough
-                        while len(pcm_buffer) >= CHUNK:
-
-                            raw = pcm_buffer[:CHUNK]
-                            pcm_buffer = pcm_buffer[CHUNK:]
-
-                            arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-
-                            # Safe amplifier
-                            arr *= BOOST
-                            peak = np.max(np.abs(arr))
-                            if peak > 30000:
-                                arr *= (30000 / peak)
-
-                            arr = np.clip(arr, -32768, 32767).astype(np.int16)
-                            out.write(arr)
-
-                    # Final buffer flush
-                    if len(pcm_buffer) >= 2:
-                        raw = pcm_buffer
-                        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-                        arr *= BOOST
-                        peak = np.max(np.abs(arr))
-                        if peak > 30000:
-                            arr *= (30000 / peak)
-                        arr = np.clip(arr, -32768, 32767).astype(np.int16)
-                        out.write(arr)
-
-            except Exception as e:
-                log("TTS playback error:", e)
-                print(f"{DISPLAY_NAME}: {speech_text}")
-
-            finally:
-                # End speech
-                time.sleep(0.05)
-                is_speaking = False
-                mic_active = True
-                self_trigger_disabled_until = time.time() + 0.5
-                last_speech_time = time.time()
-                broadcast("IDLE", "Awaiting Input")
-
-    threading.Thread(target=worker, daemon=True).start()
 
 
 # ---------------- Snippet / Research / Teach flows ----------------
@@ -663,14 +596,42 @@ def process(text):
         return
 
     # Teach
-    if looks_like_trigger(t, TEACH_TRIGGERS):
-        prompt = f"Teach: {t}. Provide a simple analogy and structured explanation suitable for a beginner. Start with one-line summary and include bullet points."
+    if looks_like_trigger(t, SNIPPET_TRIGGERS):
+
+        if last_content_data.get("mode") == "snippet":
+                prompt = (
+                f"Refine this code snippet based on user request:\n"
+                f"REQUEST: {t}\n"
+                f"CURRENT SNIPPET:\n{last_content_data.get('text','')}\n\n"
+                "Return only:\n"
+                "1. One-line summary (text)\n"
+                "2. One properly formatted code block (```)."
+            )
+        else:
+            prompt = (
+                f"Give a clean, properly formatted code example for: {t}\n"
+                "Return ONLY:\n"
+                "1. One-line summary\n"
+                "2. One triple-backtick code block (no extra text)"
+                )
+
         resp = get_ai_response(prompt)
-        last_content_data = {"text": resp, "title": f"TEACH: {t}", "mode":"teach"}
-        broadcast("SHOW_CONTENT", resp, last_content_data["title"])
-        speak(resp.split("\n")[0] if isinstance(resp,str) else "Teaching complete, Sir.", interruptible=False, minimal=True)
-        save_history("user", t); save_history("assistant", resp)
+
+        code = re.search(r"```[\s\S]*?```", resp)
+        if code:
+                snippet = code.group(0)
+        else:
+                snippet = f"```\n{resp}\n```"
+
+        update_snippet(snippet, f"SNIPPET: {t[:30]}")
+
+        one_line = resp.split("\n")[0].strip()
+        speak(one_line, interruptible=False, minimal=True)
+
+        save_history("user", t)
+        save_history("assistant", resp)
         return
+
 
     # Default: LLM chat
     broadcast("THINKING", "Processing...", "Querying Neural Core")
@@ -948,4 +909,3 @@ finally:
         sys.exit(0)
     except SystemExit:
         os._exit(0)
-
