@@ -60,7 +60,7 @@ IF exist ".env" (
         echo WS_PORT=8765
         echo WAKEWORD=jarvis
         echo AI_MODEL=llama-3.3-70b-versatile
-        echo TTS_BOOST=5.0
+        echo TTS_BOOST=12
     ) > .env
     echo .env file created. Please edit it with your keys.
 )
@@ -76,3 +76,4 @@ python Jarvis_core.py
 echo.
 echo J.A.R.V.I.S session ended.
 pause
+
