@@ -52,10 +52,6 @@ Gives simple analogies
 Bullet-point explanations
 Quick-learning mode for students
 
-### 🎬 **Cinematic Identity**
-Ask: *“Who are you?”*  
-→ Jarvis reveals a cinematic system introduction panel.
-
 ### 🔊 **Natural Voice Output**
 - Built using Murf FALCON TTS  
 - Noise-free, boosted, studio-quality voice
@@ -98,6 +94,7 @@ A complete demonstration video is included in the assets folder.
 EMAIL : tech0056m@gmail.com
 
 PHONE-NO:7980089439
+
 
 
 
