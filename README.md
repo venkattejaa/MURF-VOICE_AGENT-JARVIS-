@@ -78,11 +78,14 @@ Once you Run the requirments.bat it will install dependices and create .env file
 1. Install Python 3.11.8(Recommanded) 
 2. Run the installer:
 
+**demo**
+Theres a demo video in assets so See it To know How to Run AI Agent
 **CONTACT** 
 
 EMAIL : tech0056m@gmail.com
 
 PHONE-NO:7980089439
+
 
 
 
