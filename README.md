@@ -24,10 +24,10 @@ Designed as a fully interactive AI agent, it behaves and responds like a real di
 ## 🧠 Key Features
 
 ### 🎤 **Real-Time Voice Interaction**
-- Wakeword: **"Jarvis"**  
-- Responds instantly to voice commands  
-- Auto-mutes mic to avoid self-triggering
-- BUILT with MURF-Falcon TTS For LOW-LATENCY 
+Wakeword: “Jarvis”
+Instant response using Deepgram STT
+Smart mic auto-mute to prevent self-hearing
+Powered by Murf FALCON TTS for low-latency natural voice output 
 
 ### 🧩 **Code Snippet Mode**
 - Ask: *“show me an example in C/Java/Python”*  
@@ -35,21 +35,31 @@ Designed as a fully interactive AI agent, it behaves and responds like a real di
 - Follow-up questions refine the same snippet  
 
 ### 🔍 **Research Mode**
-- Ask: *“research on AI”*, *“find info on OSI model”*  
-- Jarvis fetches structured research summaries using Groq  
+Ask:
+“Research on AI”
+“Find information about OSI Model”
+Jarvis:
+Uses Groq Llama-3.3 70B core
+Creates structured markdown research summaries
+Displays content on the HUD screen  
 
 ### 📘 **Teaching Mode**
-- Ask: *“teach me C language”* or *“explain arrays simply”*  
-- Jarvis uses analogies to teach like a guide or tutor  
+Ask:
+“Teach me AI”
+“Explain arrays simply”
+Jarvis:
+Gives simple analogies
+Bullet-point explanations
+Quick-learning mode for students
 
 ### 🎬 **Cinematic Identity**
 Ask: *“Who are you?”*  
 → Jarvis reveals a cinematic system introduction panel.
 
 ### 🔊 **Natural Voice Output**
-- Built using Murf TTS  
-- Noise-free, boosted, studio-quality voice  
-- Multilingual support (English, Hindi, Telugu, Tamil)
+- Built using Murf FALCON TTS  
+- Noise-free, boosted, studio-quality voice
+- jarvis can speak hindi but stt does't recognize hindi yet It will be fixed in next Build
 
 ---
 
@@ -79,13 +89,16 @@ Once you Run the requirments.bat it will install dependices and create .env file
 1. Install Python 3.11.8(Recommanded) 
 2. Run the installer:
 
-**demo**
-Theres a demo video in assets so See it To know How to Run AI Agent
-**CONTACT** 
+**🎥 Demo**
+
+A complete demonstration video is included in the assets folder.
+
+**📞 Contact**
 
 EMAIL : tech0056m@gmail.com
 
 PHONE-NO:7980089439
+
 
 
 
