@@ -607,18 +607,17 @@ async def deepgram_loop():
                 if not transcript:
                     return
 
+                # ---------- INTERIM ----------
                 if not result.is_final:
-                    # If assistant is speaking and we see an interim transcript => user started speaking => interruption
-                    if is_speaking and transcript.strip():
-                        log("Interim while speaking -> interruption detected. Stopping TTS.")
+                    transcript = transcript.strip().lower()
+
+    # ONLY interrupt if interim contains the wakeword "jarvis"
+                    if is_speaking and VOCAL_NAME in transcript:
+                        log("Wakeword heard during TTS → interrupting.")
                         stop_speaking.set()
-                        # broadcast partial as interruption
-                        broadcast("LISTENING", transcript + "...", "Partial (interruption)")
-                    else:
-                        # show partial transcript
-                        if transcript.strip():
-                            broadcast("LISTENING", transcript + "...", "Partial")
+                        broadcast("LISTENING", "Yes Sir?", "Wakeword Interrupt")
                     return
+
 
                 # final transcript
                 clean_raw = transcript.strip().lower()
