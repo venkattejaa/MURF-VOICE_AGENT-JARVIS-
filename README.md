@@ -7,6 +7,10 @@ Diploma in Computer Engineering (DCME)
 - **Groq** (Neural Processing Core)
 - **Deepgram** (Speech-to-Text Engine)
 
+![Murf AI](https://img.shields.io/badge/Powered%20by-Murf%20AI-blue?style=for-the-badge)
+This project integrates Murf AI for speech synthesis.  
+Murf AI © Murf, Inc.
+
 ---
 
 ## 🚀 What is J.A.R.V.I.S?
@@ -78,3 +82,4 @@ CONTACT:-
 EMAIL :- tech0056m@gmail.com
 
 PHONE-NO:- 7980089439
+
