@@ -3,7 +3,7 @@ title J.A.R.V.I.S AI - Setup Installer
 color 0A
 
 echo ======================================================
-echo        J.A.R.V.I.S AI (BUILT BY MURF FALCON-TT
+echo        J.A.R.V.I.S AI (BUILT BY MURF FALCON-TTS)
 echo                    AUTO INSTALLER
 echo        Created by: S. Venkata Teja Naik (DCME)
 echo ======================================================
@@ -57,7 +57,7 @@ IF exist ".env" (
         echo MURF_API_KEY=ap2_085ec4a2-eaf7-4d80-a6e7-70d3bcabfb28
         echo DEEPGRAM_API_KEY=988be47d91aca476e11aad90ed37e5abf4d34eb9 
         echo GROQ_API_KEY=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
-        echo CREATOR_NAME=S.Venkata Teja Naik
+        echo CREATOR_NAME=S.Venkata Teja
         echo WS_PORT=8765
         echo WAKEWORD=jarvis
         echo AI_MODEL=llama-3.3-70b-versatile
@@ -68,14 +68,11 @@ IF exist ".env" (
 
 echo.
 
-:: ---------- LAUNCH JARVIS ----------
-echo Launching J.A.R.V.I.S...
-echo.
 
-python Jarvis_core.py
 
 echo.
 echo J.A.R.V.I.S session ended.
 pause
+
 
 
