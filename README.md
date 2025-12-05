@@ -3,7 +3,7 @@
 Diploma in Computer Engineering (DCME)
 
 ### 🔧 Powered By
-- **Murf AI** (Text-to-Speech Engine)
+- **Murf FACLON the consistently fastest TTS API** (Text-to-Speech Engine)
 - **Groq** (Neural Processing Core)
 - **Deepgram** (Speech-to-Text Engine)
 
@@ -55,7 +55,7 @@ Ask: *“Who are you?”*
 ## 🛠 Technologies Used
 - **Deepgram Nova-2** – Real-time speech recognition  
 - **Groq Llama-3.3 70B** – Fast reasoning & code generation  
-- **Murf GEN2 TTS** – Human-like AI voice  
+- **Murf FALCON TTS** – Human-like AI voice  
 - **Python** – Core logic  
 - **WebSockets + PyWebview** – HUD-style interface  
 
@@ -72,16 +72,17 @@ python-dotenv
 pywhatkit
 
 just double click on requriments.bat
-
+Once you Run the requirments.bat it will install dependices and create .env file with api key and necessary needs.
 ##  How to Run
 
 1. Install Python 3.11.8(Recommanded) 
 2. Run the installer:
 
-CONTACT:- 
+**CONTACT** 
 
-EMAIL :- tech0056m@gmail.com
+EMAIL : tech0056m@gmail.com
 
-PHONE-NO:- 7980089439
+PHONE-NO:7980089439
+
 
 
