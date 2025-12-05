@@ -217,6 +217,9 @@ def get_ai_response(prompt):
     sys_prompt = (
         f"You are {DISPLAY_NAME} ({JARVIS_ABBREV}) created by {CREATOR_NAME}.\n"
         "Persona: concise, witty, and always in-character. Address the user as 'Sir'. Do not identify as a language model, or mention limitations.\n"
+        "Just speak a little, Even if you are explaining or anything just speak few words, never break this rule, unless you are teaching or something else but don't speak alot"
+
+
     )
     if not groq_client:
         return "Neural Core offline. I cannot provide advanced summaries right now, Sir."
@@ -373,11 +376,25 @@ def close_snippet(reason="User"):
         broadcast("HIDE_CONTENT", "", f"Snippet closed: {reason}")
         return True
     return False
+def close_any_active_panel():
+    """Close snippet / research / teach UI panels safely."""
+    global last_content_data
+    
+    mode = last_content_data.get("mode")
+    if mode in ["snippet", "research", "teach"]:
+        last_content_data = {"text": "", "title": "", "mode": None}
+        broadcast("HIDE_CONTENT", "", f"{mode.upper()} Panel Closed")
+        return True
+
+    return False
+
 
 def update_snippet(display, title):
     global last_content_data
     last_content_data = {"text": display, "title": title, "mode": "snippet"}
     broadcast("SHOW_CONTENT", display, title)
+
+
 
 # Action parsing
 def execute_action_from_text(text):
@@ -409,121 +426,143 @@ def execute_action_from_text(text):
 # Cinematic intro
 def cinematic_intro():
     intro = (
-        f"I am {DISPLAY_NAME} — {JARVIS_ABBREV}. "
-        f"Operational core online. Designed and commissioned by {CREATOR_NAME}, Sir. "
+        f"Allow me to introduce myself"
+        f"I am {VOCAL_NAME} — {JARVIS_ABBREV}. "
+        f"Designed and Created by {CREATOR_NAME}, Sir. "
         "I exist to assist, analyze, and execute with precision and discretion. "
-        "At your command."
+        "and I'm here to assist you with a variety of tasks as best I can, 24 hours a day seven days a week."
     )
-    broadcast("SHOW_CONTENT", intro, "IDENTITY: J.A.R.V.I.S — CINEMATIC")
+    broadcast("SHOW_CONTENT", intro, "IDENTITY: J.A.R.V.I.S")
     speak(intro, interruptible=False, minimal=True)
-
 # Main process
 def process(text):
     global last_content_data
-    if not text: return
+    if not text:
+        return
+
     t = text.strip()
-    if not t: return
     tl = t.lower()
 
-    # Close panels
-    if any(p in tl for p in ["close", "stop", "cancel", "hide", "remove", "off"]):
-        if last_content_data.get("mode") in ["snippet","research","teach"]:
-            last_content_data["mode"] = None
-            broadcast("HIDE_CONTENT", "", "Panel Closed")
-            speak("Closed, Sir.", interruptible=False, minimal=True)
-            return
-
+    # Quick confirmations
     if "can you hear" in tl:
-        speak("Yes, Sir. I can hear and understand you.", interruptible=False, minimal=True)
+        speak("Yes, Sir. Loud and clear.", interruptible=False, minimal=True)
         return
 
-    if "close" in tl and "snippet" in tl:
-        closed = close_snippet("Direct close request")
-        speak("Snippet closed, Sir." if closed else "No snippet open, Sir.", interruptible=False, minimal=True)
+    # Direct close requests
+    if "close" in tl and ("panel" in tl or "snippet" in tl or "research" in tl or "teach" in tl):
+        closed = close_any_active_panel()
+        speak("Closed, Sir." if closed else "Nothing is open, Sir.", interruptible=False, minimal=True)
         return
 
-    if last_content_data.get("mode") == "snippet":
-        refine_phrases = ["add","modify","change","use","show me","in c","in java","with function","with input","include"]
-        if not (looks_like_trigger(t, SNIPPET_TRIGGERS) or any(p in tl for p in refine_phrases)):
-            close_snippet("Context switch")
+    # Handle wakeword-only commands (jarvis ...)
+    # (Handled elsewhere but safe fallback)
 
+    # Detect mode-change → auto close previous panel
+    if last_content_data.get("mode") in ["snippet", "research", "teach"]:
+        if looks_like_trigger(t, SNIPPET_TRIGGERS) or \
+           looks_like_trigger(t, RESEARCH_TRIGGERS) or \
+           looks_like_trigger(t, TEACH_TRIGGERS):
+            close_any_active_panel()
+
+    # ------------ AUTOMATION (play/open/search) ------------
     action = execute_action_from_text(t)
     if action:
         speak(action, interruptible=False, minimal=True)
-        save_history("user", t); save_history("assistant", action)
+        save_history("user", t)
+        save_history("assistant", action)
         return
 
-    id_triggers = ["who are you","what is your identity","tell me about yourself","who made you","identity"]
+    # ------------ IDENTITY ------------
+    id_triggers = ["who are you", "your identity", "tell me about yourself", "who made you"]
     if any(p in tl for p in id_triggers):
-        cinematic_intro(); save_history("user", t); save_history("assistant", "Cinematic intro"); return
+        cinematic_intro()
+        save_history("user", t)
+        save_history("assistant", "Cinematic intro")
+        return
 
-    # SNIPPET handling — robust extraction and display
+    # ------------ SNIPPET MODE ------------
     if looks_like_trigger(t, SNIPPET_TRIGGERS):
-        if last_content_data.get("mode") == "snippet":
-            prompt = f"Refine the following snippet per request: {t}\nCURRENT_SNIPPET:\n{last_content_data.get('text','')}\nReturn only a single code block and a one-line description."
-        else:
-            prompt = f"Provide a concise code example for: {t}. Return ONLY one code block in triple backticks and a one-line summary above it."
+        close_any_active_panel()
+
+        prompt = (
+            f"Provide a concise code example for: {t}. "
+            "Return ONLY:\n"
+            "1. One-line summary\n"
+            "2. One triple-backtick code block"
+        )
 
         resp = get_ai_response(prompt)
-        if not resp:
-            speak("I could not fetch an example, Sir.", interruptible=False, minimal=True)
-            return
 
-        # Extract code block reliably, preserving indentation
-        m = re.search(r"```(?:\w*\n)?([\s\S]*?)```", resp)
-        if m:
-            code_body = m.group(1).rstrip()
-            display = "```\n" + code_body + "\n```"
-        else:
-            # fallback — wrap full response
-            display = "```\n" + resp.strip() + "\n```"
+        # Extract code
+        code_match = re.search(r"```[\s\S]*?```", resp)
+        snippet = code_match.group(0) if code_match else f"```\n{resp}\n```"
 
-        update_snippet(display, f"SNIPPET: {t[:40]}")
-        first_line = resp.split("\n")[0].strip()
-        speak(first_line if first_line else "Displayed example, Sir.", interruptible=False, minimal=True)
-        save_history("user", t); save_history("assistant", resp)
+        update_snippet(snippet, f"SNIPPET: {t[:40]}")
+
+        summary = resp.split("\n")[0].strip()
+        speak(summary, interruptible=False, minimal=True)
+
+        save_history("user", t)
+        save_history("assistant", resp)
         return
 
-    # Research
+    # ------------ RESEARCH MODE ------------
     if looks_like_trigger(t, RESEARCH_TRIGGERS):
-        topic = t
-        speak(f"Compiling research on {topic}, Sir.", interruptible=False, minimal=True)
+        close_any_active_panel()
+
+        speak("Researching, Sir.", interruptible=False, minimal=True)
+
         def _do(topic):
-            res = groq_research_summary(topic)
-            last_content_data.update({"text": res, "title": f"RESEARCH: {topic}", "mode": "research"})
-            broadcast("SHOW_CONTENT", res, last_content_data["title"])
-            speak(res.split("\n")[0] if isinstance(res, str) else "Research complete, Sir.", interruptible=False, minimal=True)
-        threading.Thread(target=_do, args=(topic,), daemon=True).start()
+            result = groq_research_summary(topic)
+            last_content_data.update({
+                "text": result, "title": f"RESEARCH: {topic}", "mode": "research"
+            })
+            broadcast("SHOW_CONTENT", result, f"RESEARCH: {topic}")
+            speak(result.split("\n")[0], interruptible=False, minimal=True)
+
+        threading.Thread(target=_do, args=(t,), daemon=True).start()
+
         save_history("user", t)
         return
 
-    # Teach
+    # ------------ TEACH MODE ------------
     if looks_like_trigger(t, TEACH_TRIGGERS):
-        prompt = f"Teach: {t}. Provide a simple analogy and structured explanation suitable for a beginner. Start with one-line summary and include bullet points."
+        close_any_active_panel()
+
+        prompt = (
+            f"Teach {t} in simple terms. "
+            "Return a one-line summary then bullet points."
+        )
+
         resp = get_ai_response(prompt)
-        last_content_data = {"text": resp, "title": f"TEACH: {t}", "mode": "teach"}
-        broadcast("SHOW_CONTENT", resp, last_content_data["title"])
-        speak(resp.split("\n")[0] if isinstance(resp, str) else "Teaching complete, Sir.", interruptible=False, minimal=True)
-        save_history("user", t); save_history("assistant", resp)
+
+        last_content_data = {
+            "text": resp,
+            "title": f"TEACH: {t}",
+            "mode": "teach"
+        }
+
+        broadcast("SHOW_CONTENT", resp, f"TEACH: {t}")
+        speak(resp.split("\n")[0], interruptible=False, minimal=True)
+
+        save_history("user", t)
+        save_history("assistant", resp)
         return
 
-    # Default: LLM
-    broadcast("THINKING", "Processing...", "Querying Neural Core")
+    # ------------ DEFAULT CONVERSATION ------------
+    broadcast("THINKING", "Processing...", "Neural Core")
     resp = get_ai_response(t)
-    save_history("user", t); save_history("assistant", resp)
 
-    # Post-action
-    post_action = execute_action_from_text(resp if isinstance(resp, str) else "")
+    save_history("user", t)
+    save_history("assistant", resp)
+
+    post_action = execute_action_from_text(resp)
     if post_action:
         speak(post_action, interruptible=False, minimal=True)
         broadcast("PROCESSING", post_action, "Automation Executed")
         return
 
-    if "time" in tl and ("what" in tl or "tell" in tl or "current" in tl):
-        speak(f"It is {datetime.datetime.now().strftime('%I:%M %p')}, Sir.", interruptible=False, minimal=True)
-        return
-
-    speak(resp if isinstance(resp, str) else str(resp), interruptible=True, minimal=True)
+    speak(resp, interruptible=True, minimal=True)
 
 # ---------------- Deepgram STT ----------------
 def mic_callback(indata, frames, t, status):
