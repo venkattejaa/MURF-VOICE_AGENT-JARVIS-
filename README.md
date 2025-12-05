@@ -26,7 +26,8 @@ Designed as a fully interactive AI agent, it behaves and responds like a real di
 ### 🎤 **Real-Time Voice Interaction**
 - Wakeword: **"Jarvis"**  
 - Responds instantly to voice commands  
-- Auto-mutes mic to avoid self-triggering  
+- Auto-mutes mic to avoid self-triggering
+- BUILT with MURF-Falcon TTS For LOW-LATENCY 
 
 ### 🧩 **Code Snippet Mode**
 - Ask: *“show me an example in C/Java/Python”*  
@@ -85,6 +86,7 @@ Theres a demo video in assets so See it To know How to Run AI Agent
 EMAIL : tech0056m@gmail.com
 
 PHONE-NO:7980089439
+
 
 
 
