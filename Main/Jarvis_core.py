@@ -393,8 +393,14 @@ def speak(text, interruptible=True, minimal=False):
 
     # Minimal → only speak first sentence
     if minimal:
-        sentences = re.split(r"[.?!]\s+", speech_text)
-        speech_text = sentences[0] if sentences else speech_text
+    # minimal mode → only 1 sentence
+       # FULL SPEECH ALWAYS — ignore minimal flag
+        minimal = False
+
+# REMOVE ELSE LIMIT
+# else:
+#     pass  # speak entire text
+
 
     # HUD update
     broadcast("SPEAKING", display_text, f"AI: {display_text[:60]}")
