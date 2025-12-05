@@ -331,6 +331,18 @@ def groq_research_summary(topic):
         "- Start with a one-line summary.\n"
         "- Then 3-6 bullet points covering key concepts, recent developments, uses, and references.\n"
         "- Keep it under 350 words."
+        "Provide a clean, properly formatted, multi-line code example for: {t}.\n"
+        "REQUIREMENTS:\n"
+        "- MUST use correct indentation. Never break Intendations\n"
+        "- MUST break lines normally.\n"
+        "- MUST wrap the entire code in one triple-backtick block.\n"
+        "- NO inline one-line code.\n"
+        "- NO explanations inside the code block.\n"
+        "- Outside the code block, include ONE short summary line only."
+        "Persona:\n"
+        "Speak Less."
+        "Don't Speak unecessary things."
+        "just speak a little much which is enough"
     )
     resp = get_ai_response(prompt)
     return resp
@@ -617,10 +629,20 @@ def process(text):
         else:
             prompt = f"Provide a concise code example for: {t}. Return ONLY one code block in triple backticks and a one-line summary above it."
         resp = get_ai_response(prompt)
-        code_match = re.search(r"```(?:\w*\n)?(.*?)```", resp, flags=re.DOTALL)
-        code_content = code_match.group(1).strip() if code_match else resp.strip()
+        # Extract clean code block reliably
+        code_match = re.search(r"```[\s\S]*?```", resp)
         title = "Example: " + (" ".join(t.split()[:8])).strip()
-        display = "```" + code_content + "```" if code_content else resp
+        if code_match:
+    # Keep EXACT formatting inside backticks
+            display = code_match.group(0)
+        
+        else:
+    # As fallback, preserve linebreaks
+            display = "```" + resp.strip() + "```"
+
+        
+
+
         update_snippet(display, f"SNIPPET: {title}")
         first_line = resp.split("\n")[0].strip()
         speak(first_line if first_line else "Displayed example, Sir.", interruptible=False, minimal=True)
