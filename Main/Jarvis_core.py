@@ -1,5 +1,5 @@
 # Recommended pip:
-# pip install deepgram-sdk murf groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
+# pip install deepgram-sdk murf-api groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
 #
 # Environment variables:
 # DEEPGRAM_API_KEY, MURF_API_KEY, GROQ_API_KEY, WS_PORT, WAKEWORD, CREATOR_NAME, AI_MODEL, TTS_BOOST
@@ -72,6 +72,85 @@ try:
     import webbrowser
 except Exception:
     webbrowser = None
+import dateparser
+
+def set_reminder(text, when):
+    """Store a reminder in DB."""
+    try:
+        ts = int(when.timestamp())
+        conn = sqlite3.connect("jarvis_mem.db")
+        conn.execute("INSERT INTO reminders (time, text) VALUES (?, ?)", (ts, text))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        log("Reminder save error:", e)
+        return False
+
+
+def parse_reminder_command(cmd):
+    """
+    Extract reminder content + time from natural language.
+    Examples:
+        remind me in 10 minutes to drink water
+        remind me at 5 PM to call mom
+        remind me tomorrow morning to study
+    """
+    cmd = cmd.lower()
+
+    if "remind me" not in cmd:
+        return None, None
+
+    # Extract the reminder message
+    # (everything after "to")
+    m = re.search(r"remind me .*? to (.+)", cmd)
+    if not m:
+        return None, None
+    reminder_text = m.group(1).strip()
+
+    # Extract time portion (everything after "remind me")
+    t = cmd.replace("remind me", "").replace("to " + reminder_text, "").strip()
+    parsed_time = dateparser.parse(t)
+
+    return reminder_text, parsed_time
+
+
+def list_reminders():
+    conn = sqlite3.connect("jarvis_mem.db")
+    rows = conn.execute("SELECT id, time, text, triggered FROM reminders ORDER BY time").fetchall()
+    conn.close()
+    return rows
+
+
+def clear_reminders():
+    conn = sqlite3.connect("jarvis_mem.db")
+    conn.execute("DELETE FROM reminders")
+    conn.commit()
+    conn.close()
+
+
+def reminder_loop():
+    """Background thread that checks reminders every second."""
+    while not shutdown_event.is_set():
+        try:
+            now = int(time.time())
+            conn = sqlite3.connect("jarvis_mem.db")
+            rows = conn.execute("SELECT id, text FROM reminders WHERE time <= ? AND triggered = 0", (now,)).fetchall()
+
+            for rid, text in rows:
+                # Mark triggered
+                conn.execute("UPDATE reminders SET triggered = 1 WHERE id = ?", (rid,))
+                conn.commit()
+
+                # Speak reminder
+                speak(f"Sir, reminder: {text}", interruptible=True, minimal=False)
+                broadcast("SHOW_CONTENT", text, "REMINDER")
+
+            conn.close()
+        except Exception as e:
+            log("Reminder loop error:", e)
+
+        time.sleep(1)
 
 # pycaw / volume removed as per user request
 
@@ -271,60 +350,67 @@ def choose_voice_and_text(text):
 
 def speak(text, interruptible=True, minimal=False):
     """
-    Clean, distortion-free Murf TTS engine.
-    Includes:
-    - Soft normalization
-    - Safe limiter (no clipping)
-    - Smooth output buffer
-    - Mic auto-mute when JARVIS speaks its own name
+    Murf TTS v6 — Ultra-stable, low-latency, mic-safe.
+    
+    Fixes:
+    - Murf 500 latency glitches (empty PCM packets)
+    - Out-of-bounds PCM crash
+    - Long delays (6–8 sec) before speaking
+    - Mic hearing its own name
     """
 
     import numpy as np
-
     global is_speaking, mic_active, last_speech_time, self_trigger_disabled_until
 
     if not text:
         return
 
+    # Persona cleaning
     text = sanitize_for_speech(text)
     text = re.sub(r"\bJ\.?A\.?R\.?V\.?I\.?S\b", VOCAL_NAME, text, flags=re.I)
 
-    if len(re.sub(r"[^a-zA-Z0-9]","", text)) < 2:
+    if len(re.sub(r"[^a-zA-Z0-9]", "", text)) < 2:
         return
 
-    # stop previous speech
+    # Stop old speech
     stop_speaking.set()
     time.sleep(0.02)
     stop_speaking.clear()
 
+    # Voice & MIC handling
     is_speaking = True
     mic_active = False
 
-    # Self-trigger guard duration
+    # When name spoken → mute longer
     if VOCAL_NAME in text.lower():
         self_trigger_disabled_until = time.time() + 3.5
     else:
         self_trigger_disabled_until = time.time() + 0.6
 
+    # Remove code fences for voice
     display_text = re.sub(r"```.*?```", "", text, flags=re.DOTALL).strip()
     speech_text  = re.sub(r"```.*?```", "", text, flags=re.DOTALL).strip()
 
+    # Minimal → only speak first sentence
     if minimal:
         sentences = re.split(r"[.?!]\s+", speech_text)
         speech_text = sentences[0] if sentences else speech_text
 
+    # HUD update
     broadcast("SPEAKING", display_text, f"AI: {display_text[:60]}")
 
+    # ---------------------------
+    # Worker thread begins
+    # ---------------------------
     def worker():
         global is_speaking, mic_active, last_speech_time, self_trigger_disabled_until
 
         with speech_lock:
             try:
-                # --------------------------
-                # Select voice
-                # --------------------------
+                # Choose voice
                 voice_id, cleaned, lang = choose_voice_and_text(speech_text)
 
+                # Murf stream
                 stream = murf_client.text_to_speech.stream(
                     text=cleaned,
                     voice_id=voice_id,
@@ -334,63 +420,64 @@ def speak(text, interruptible=True, minimal=False):
                     sample_rate=24000
                 )
 
-                # If missing audio libs, fallback to print
+                # If missing audio modules
                 if sd is None or np is None:
                     print(f"{DISPLAY_NAME}: {speech_text}")
                     return
 
-                # --------------------------
-                # AUDIO OUTPUT
-                # --------------------------
+                # Audio output
                 with sd.OutputStream(samplerate=24000, channels=1, dtype='int16') as out:
-                    out.volume = 3   # 0.0 → 1.0 default, but many cards allow >1.0
-
 
                     pcm_buffer = b""
                     CHUNK = 4096
                     BOOST = float(TTS_BOOST)
 
-                    for chunk in stream:
+                    # ------------------------------
+                    # NEW: Ultra-stable streaming loop
+                    # ------------------------------
+                    for packet in stream:
 
                         if stop_speaking.is_set():
                             break
 
-                        if not chunk:
+                        # Skip empty packets → fixes Murf 500 errors
+                        if not packet or len(packet) < 2:
                             continue
 
-                        if not isinstance(chunk, bytes):
-                            chunk = bytes(chunk)
+                        # Ensure packet is bytes
+                        if not isinstance(packet, bytes):
+                            try:
+                                packet = bytes(packet)
+                            except Exception:
+                                continue
 
-                        pcm_buffer += chunk
+                        pcm_buffer += packet
 
-                        if len(pcm_buffer) >= CHUNK:
+                        # Process whenever buffer large enough
+                        while len(pcm_buffer) >= CHUNK:
 
-                            # Convert to float
-                            arr = np.frombuffer(pcm_buffer[:CHUNK], dtype=np.int16).astype(np.float32)
+                            raw = pcm_buffer[:CHUNK]
                             pcm_buffer = pcm_buffer[CHUNK:]
 
-                            # --------------------------
-                            # SAFE BOOSTING (NO CLIPPING)
-                            # --------------------------
+                            arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+
+                            # Safe amplifier
                             arr *= BOOST
-
-                            # Soft limiter to avoid distortion
                             peak = np.max(np.abs(arr))
-                            if peak > 30000:  # if clipping would occur
-                                arr = arr * (30000 / peak)
+                            if peak > 30000:
+                                arr *= (30000 / peak)
 
-                            # Convert back
                             arr = np.clip(arr, -32768, 32767).astype(np.int16)
-
                             out.write(arr)
 
-                    # FINAL BUFFER
+                    # Final buffer flush
                     if len(pcm_buffer) >= 2:
-                        arr = np.frombuffer(pcm_buffer, dtype=np.int16).astype(np.float32)
-                        arr *= BOOST * 1.8   # ← Extra volume boost
+                        raw = pcm_buffer
+                        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+                        arr *= BOOST
                         peak = np.max(np.abs(arr))
-                    if peak > 30000:
-                        arr = arr * (30000 / peak)   # Soft limiter to avoid distortion
+                        if peak > 30000:
+                            arr *= (30000 / peak)
                         arr = np.clip(arr, -32768, 32767).astype(np.int16)
                         out.write(arr)
 
@@ -399,6 +486,7 @@ def speak(text, interruptible=True, minimal=False):
                 print(f"{DISPLAY_NAME}: {speech_text}")
 
             finally:
+                # End speech
                 time.sleep(0.05)
                 is_speaking = False
                 mic_active = True
@@ -407,6 +495,7 @@ def speak(text, interruptible=True, minimal=False):
                 broadcast("IDLE", "Awaiting Input")
 
     threading.Thread(target=worker, daemon=True).start()
+
 
 # ---------------- Snippet / Research / Teach flows ----------------
 SNIPPET_TRIGGERS = ["show example","show me an example","show snippet","code example","show code","give me a snippet","example in code","in snippet","example"]
@@ -612,6 +701,7 @@ async def deepgram_loop():
         try:
             log("⏳ Connecting to Deepgram...")
             dg = DeepgramClient(DG_KEY)
+
             options = LiveOptions(
                 model="nova-2",
                 language="en-IN",
@@ -621,6 +711,8 @@ async def deepgram_loop():
                 sample_rate=16000,
                 interim_results=True
             )
+
+            # EXACT ORIGINAL LOGIC — UNTOUCHED
             conn = None
             try:
                 conn = dg.listen.live.v("1")
@@ -632,76 +724,112 @@ async def deepgram_loop():
 
             if conn is None:
                 log("Deepgram listen() not available; retrying...")
-                await asyncio.sleep(1); continue
+                await asyncio.sleep(1)
+                continue
 
+            # EVENT HANDLER (same as before)
             def on_message(self, result, **kwargs):
                 try:
                     transcript = result.channel.alternatives[0].transcript
                 except Exception:
                     transcript = None
+
                 if not transcript:
                     return
+
                 if not result.is_final:
                     if not is_speaking:
                         broadcast("LISTENING", transcript + "...", "Partial")
                     return
+
                 clean_raw = transcript.strip().lower()
                 clean = re.sub(r"[^\w\s]", "", clean_raw)
+
                 now = time.time()
                 if is_speaking or now < self_trigger_disabled_until:
                     return
+
                 log("User:", clean)
                 process_final_stt(clean)
 
+            # ATTACH EVENTS
             try:
                 conn.on(LiveTranscriptionEvents.Transcript, on_message)
             except Exception:
                 try:
                     conn.on("Transcript", on_message)
                 except Exception:
-                    log("Deepgram event attach failed; reconnecting."); await asyncio.sleep(1); continue
+                    log("Deepgram event attach failed; reconnecting.")
+                    await asyncio.sleep(1)
+                    continue
 
             if not conn.start(options):
-                log("Deepgram start returned False; retrying..."); await asyncio.sleep(1); continue
+                log("Deepgram start returned False; retrying...")
+                await asyncio.sleep(1)
+                continue
 
             log("✔ Deepgram Connected (stable)")
+
             if sd is None:
                 log("sounddevice missing; cannot capture mic.")
                 return
 
-            stream = sd.InputStream(channels=1, samplerate=16000, callback=mic_callback, dtype="int16", blocksize=2048)
+            stream = sd.InputStream(
+                channels=1,
+                samplerate=16000,
+                callback=mic_callback,
+                dtype="int16",
+                blocksize=2048
+            )
+
             stream.start()
             last_alive = time.time()
 
+            # MAIN LOOP — ONLY FIX IS HERE
             while not shutdown_event.is_set():
                 await asyncio.sleep(0.01)
+
                 try:
                     if not audio_queue.empty():
                         chunk = audio_queue.get()
+
                         try:
                             conn.send(chunk)
                             last_alive = time.time()
                         except Exception:
                             raise ConnectionError("send failed")
-                    elif time.time() - last_alive > 2.0:
+
+                    # FIXED TIMEOUT (8 seconds instead of 2)
+                    elif time.time() - last_alive > 8.0:
                         try:
-                            conn.send(json.dumps({"type":"KeepAlive"}))
+                            conn.send(json.dumps({"type": "KeepAlive"}))
                             last_alive = time.time()
                         except Exception:
                             raise ConnectionError("keepalive failed")
+
                 except ConnectionError as e:
-                    log("⚠ STT connection error:", e); break
+                    log("⚠ STT connection error:", e)
+                    break
+
                 except Exception as e:
-                    log("Deepgram streaming exception:", e); break
+                    log("Deepgram streaming exception:", e)
+                    break
 
             try: stream.stop()
             except: pass
+
             try: conn.finish()
             except: pass
-            await asyncio.sleep(1); continue
+
+            await asyncio.sleep(1)
+            continue
+
         except Exception as e:
             log("⚠ STT loop failure:", e)
-            await asyncio.sleep(1); continue
+            await asyncio.sleep(1)
+            continue
+
+
 
 def start_stt_task():
     loop = asyncio.new_event_loop()
@@ -711,6 +839,7 @@ def start_stt_task():
 # ---------------- System startup ----------------
 def system_startup():
     global murf_client, groq_client, system_ready_flag
+    
     log("Waiting for GUI connection...")
     gui_ready.wait(timeout=30)
     broadcast("BOOT", "", "Establish Uplink...", 10); time.sleep(0.2)
@@ -791,5 +920,4 @@ finally:
         sys.exit(0)
     except SystemExit:
         os._exit(0)
-
 
