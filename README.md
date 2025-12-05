@@ -2,6 +2,11 @@
 ### Created by **S. Venkata Teja Naik**  
 Diploma in Computer Engineering (DCME)
 
+### 🔧 Powered By
+- **Murf AI** (Text-to-Speech Engine)
+- **Groq** (Neural Processing Core)
+- **Deepgram** (Speech-to-Text Engine)
+
 ---
 
 ## 🚀 What is J.A.R.V.I.S?
@@ -71,4 +76,5 @@ just double click on requriments.bat
 
 CONTACT:- 
 EMAIL :- tech0056m@gmail.com
+
 PHONE-NO:- 7980089439
