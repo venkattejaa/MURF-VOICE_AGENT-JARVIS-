@@ -22,7 +22,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 WS_PORT = int(os.getenv("WS_PORT", "8765"))
 WAKEWORD = os.getenv("WAKEWORD", "jarvis").lower()
-CREATOR_NAME = os.getenv("CREATOR_NAME", "Venkat Teja")
+CREATOR_NAME=S.Venkata Teja
 AI_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
 DISPLAY_NAME = "J.A.R.V.I.S"
 VOCAL_NAME = "jarvis"
