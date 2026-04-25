@@ -89,11 +89,6 @@ Once you Run the requirments.bat it will install dependices and create .env file
 
 A complete demonstration video is included in the assets folder.
 
-**📞 Contact**
-
-EMAIL : tech0056m@gmail.com
-
-PHONE-NO:7980089439
 
 
 
