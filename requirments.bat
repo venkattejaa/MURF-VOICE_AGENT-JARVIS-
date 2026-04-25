@@ -5,7 +5,7 @@ color 0A
 echo ======================================================
 echo        J.A.R.V.I.S AI (BUILT BY MURF FALCON-TTS)
 echo                    AUTO INSTALLER
-echo        Created by: S. Venkata Teja Naik (DCME)
+echo            Created by: S. Venkata Teja Naik 
 echo ======================================================
 echo.
 
@@ -32,6 +32,7 @@ echo.
 pip install --upgrade pip >nul
 
 pip install deepgram-sdk >nul
+pip install dateparser >nul
 pip install murf >nul
 pip install groq >nul
 pip install websockets >nul
