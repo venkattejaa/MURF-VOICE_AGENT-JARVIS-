@@ -1,5 +1,5 @@
 # Requirements:
-# pip install deepgram-sdk murf groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
+# pip install dateparser deepgram-sdk murf groq websockets sounddevice numpy pywebview pywhatkit python-dotenv
 
 import os
 import sys
